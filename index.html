@@ -22,15 +22,17 @@
     <canvas id="c"></canvas>
     <script>
 
-    // just got basic movement working in 2 rooms
+    // keydungeon - keyboard only roguelike
+    // day 1: dungeon gen, enemies (no combat yet), fog of war, stairs
 
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
 
-    const MAP_W = 30;
-    const MAP_H = 20;
-    const VIEW_RADIUS = 5;
+    const MAP_W = 40;
+    const MAP_H = 28;
+    const VIEW_RADIUS = 6;
 
+    // colors
     const COL = {
         bg: '#0a0a0a',
         wallSeen: '#1a1a1a',
@@ -40,15 +42,23 @@
         player: '#00ff41',
         text: '#00ff41',
         dim: '#005522',
-        bg2: '#0d0d0d'
+        enemy: '#ff4444',
+        stairs: '#ffcc00',
+        corridor: '#111111'
     };
 
-    let tileSize = 20;
+    let tileSize = 18;
     let state = 'menu';
     let map = [];
-    let player = { x: 0, y: 0 };
+    let rooms = [];
+    let enemies = [];
+    let player = { x: 0, y: 0, hp: 60, maxHp: 60 };
+    let floor = 1;
     let lastMove = 0;
-    const MOVE_COOLDOWN = 120;
+    const MOVE_COOLDOWN = 140; // slightly slower so cant hold keys
+    let stairsPos = null;
+    let msg = ''; // bottom message
+    let msgTimer = 0;
 
     function resize() {
         canvas.width = window.innerWidth;
@@ -57,7 +67,7 @@
             Math.floor(canvas.width / MAP_W),
             Math.floor(canvas.height / MAP_H)
         );
-        tileSize = Math.max(14, Math.min(24, tileSize));
+        tileSize = Math.max(12, Math.min(22, tileSize));
     }
     window.addEventListener('resize', resize);
     resize();
@@ -66,9 +76,14 @@
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 
-    // just two rooms and a corridor - nothing fancy
+    // ---- BSP dungeon generation ----
+    // this took longer than i expected, kept getting overlapping rooms
+
     function generateMap() {
         map = [];
+        rooms = [];
+        enemies = [];
+
         for (let y = 0; y < MAP_H; y++) {
             map[y] = [];
             for (let x = 0; x < MAP_W; x++) {
@@ -76,20 +91,90 @@
             }
         }
 
-        // room 1 - left side
-        for (let y = 4; y < 12; y++)
-            for (let x = 3; x < 12; x++)
-                map[y][x].type = 'floor';
+        // generate rooms with simple random placement
+        // tried bsp but this was simpler and works ok
+        let attempts = 0;
+        let numRooms = rand(5, 7) + Math.min(floor, 3); // more rooms on deeper floors
 
-        // room 2 - right side
-        for (let y = 6; y < 14; y++)
-            for (let x = 18; x < 27; x++)
-                map[y][x].type = 'floor';
+        while (rooms.length < numRooms && attempts < 200) {
+            let w = rand(4, 9);
+            let h = rand(4, 7);
+            let x = rand(2, MAP_W - w - 2);
+            let y = rand(2, MAP_H - h - 2);
 
-        // corridor connecting them
-        for (let x = 12; x < 18; x++)
-            map[8][x].type = 'floor';
+            let overlap = false;
+            for (let r of rooms) {
+                if (x < r.x + r.w + 1 && x + w + 1 > r.x &&
+                    y < r.y + r.h + 1 && y + h + 1 > r.y) {
+                    overlap = true;
+                    break;
+                }
+            }
+
+            if (!overlap) {
+                rooms.push({ x, y, w, h, cx: Math.floor(x + w/2), cy: Math.floor(y + h/2) });
+                // carve room
+                for (let ry = y; ry < y + h; ry++)
+                    for (let rx = x; rx < x + w; rx++)
+                        map[ry][rx].type = 'floor';
+            }
+            attempts++;
+        }
+
+        // connect rooms with corridors (connect each to the next)
+        for (let i = 0; i < rooms.length - 1; i++) {
+            let a = rooms[i];
+            let b = rooms[i + 1];
+            carveCorridor(a.cx, a.cy, b.cx, b.cy);
+        }
+
+        // place player in first room
+        player.x = rooms[0].cx;
+        player.y = rooms[0].cy;
+
+        // place stairs in last room
+        let lastRoom = rooms[rooms.length - 1];
+        stairsPos = { x: lastRoom.cx, y: lastRoom.cy };
+
+        // place enemies in rooms (not first room)
+        let enemyTypes = ['s', 'b', 'k']; // slime, bat, skeleton
+        for (let i = 1; i < rooms.length; i++) {
+            let r = rooms[i];
+            let numEnemies = rand(1, 2) + Math.floor(floor / 2);
+            for (let j = 0; j < numEnemies; j++) {
+                let ex = rand(r.x + 1, r.x + r.w - 2);
+                let ey = rand(r.y + 1, r.y + r.h - 2);
+                // dont place on stairs
+                if (stairsPos && ex === stairsPos.x && ey === stairsPos.y) continue;
+                let type = enemyTypes[rand(0, enemyTypes.length - 1)];
+                enemies.push({
+                    x: ex, y: ey, type: type,
+                    hp: type === 's' ? 10 : type === 'b' ? 8 : 15,
+                    alive: true
+                });
+            }
+        }
+
+        updateVis();
     }
+
+    function carveCorridor(x1, y1, x2, y2) {
+        // l-shaped corridor
+        let x = x1, y = y1;
+        while (x !== x2) {
+            if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
+                map[y][x].type = 'floor';
+            x += x < x2 ? 1 : -1;
+        }
+        while (y !== y2) {
+            if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
+                map[y][x].type = 'floor';
+            y += y < y2 ? 1 : -1;
+        }
+    }
+
+    // ---- fog of war ----
+    // using manhattan distance for now, should do line of sight later
 
     function updateVis() {
         for (let y = 0; y < MAP_H; y++)
@@ -97,21 +182,52 @@
                 map[y][x].vis = false;
 
         for (let y = 0; y < MAP_H; y++)
-            for (let x = 0; x < MAP_W; x++)
-                if (Math.abs(x - player.x) + Math.abs(y - player.y) <= VIEW_RADIUS) {
+            for (let x = 0; x < MAP_W; x++) {
+                let dx = Math.abs(x - player.x);
+                let dy = Math.abs(y - player.y);
+                if (dx + dy <= VIEW_RADIUS) {
                     map[y][x].vis = true;
                     map[y][x].seen = true;
                 }
+            }
     }
+
+    // ---- movement ----
 
     function tryMove(dx, dy) {
         let nx = player.x + dx;
         let ny = player.y + dy;
         if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) return;
         if (map[ny][nx].type === 'wall') return;
+
+        // check enemy collision - bump to attack (day 2 will add real combat)
+        let enemy = enemies.find(e => e.alive && e.x === nx && e.y === ny);
+        if (enemy) {
+            // just show a message for now, no real combat
+            showMessage('you bumped into a ' + getEnemyName(enemy.type) + '!');
+            return;
+        }
+
         player.x = nx;
         player.y = ny;
+
+        // check stairs
+        if (stairsPos && player.x === stairsPos.x && player.y === stairsPos.y) {
+            floor++;
+            player.hp = Math.min(player.hp + 10, player.maxHp); // heal a bit between floors
+            generateMap();
+            showMessage('descended to floor ' + floor);
+            return;
+        }
+
         updateVis();
+    }
+
+    function getEnemyName(type) {
+        if (type === 's') return 'slime';
+        if (type === 'b') return 'bat';
+        if (type === 'k') return 'skeleton';
+        return 'thing';
     }
 
     function movePlayer(dx, dy) {
@@ -122,21 +238,28 @@
         tryMove(dx, dy);
     }
 
-    function initGame() {
-        generateMap();
-        player.x = 7;
-        player.y = 8;
-        updateVis();
+    function showMessage(text) {
+        msg = text;
+        msgTimer = Date.now();
     }
 
-    // rendering
+    // ---- init ----
+
+    function initGame() {
+        floor = 1;
+        player.hp = player.maxHp;
+        generateMap();
+    }
+
+    // ---- rendering ----
+
     function render() {
         ctx.fillStyle = COL.bg;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         if (state === 'menu') {
             drawMenu();
-        } else {
+        } else if (state === 'playing') {
             drawGame();
         }
     }
@@ -147,33 +270,78 @@
         ctx.save();
         ctx.translate(ox, oy);
 
+        // draw map
         for (let y = 0; y < MAP_H; y++) {
             for (let x = 0; x < MAP_W; x++) {
                 let t = map[y][x];
                 if (!t.seen) continue;
                 let sx = x * tileSize, sy = y * tileSize;
 
-                ctx.fillStyle = t.type === 'wall' ?
-                    (t.vis ? COL.wallVis : COL.wallSeen) :
-                    (t.vis ? COL.floorVis : COL.floorSeen);
+                if (t.type === 'wall') {
+                    ctx.fillStyle = t.vis ? COL.wallVis : COL.wallSeen;
+                } else {
+                    ctx.fillStyle = t.vis ? COL.floorVis : COL.floorSeen;
+                }
                 ctx.fillRect(sx, sy, tileSize, tileSize);
             }
         }
 
-        // player
+        // draw stairs (only if visible)
+        if (stairsPos && map[stairsPos.y][stairsPos.x].vis) {
+            ctx.fillStyle = COL.stairs;
+            ctx.font = 'bold ' + tileSize + 'px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('>', stairsPos.x * tileSize + tileSize/2, stairsPos.y * tileSize + tileSize/2);
+        }
+
+        // draw enemies (only if visible)
+        ctx.font = (tileSize - 2) + 'px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (let e of enemies) {
+            if (!e.alive) continue;
+            if (!map[e.y][e.x].vis) continue;
+            ctx.fillStyle = COL.enemy;
+            let ch = e.type === 's' ? '~' : e.type === 'b' ? 'v' : 'K';
+            ctx.fillText(ch, e.x * tileSize + tileSize/2, e.y * tileSize + tileSize/2);
+        }
+
+        // draw player
         ctx.fillStyle = COL.player;
         ctx.font = 'bold ' + tileSize + 'px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('@', player.x * tileSize + tileSize / 2, player.y * tileSize + tileSize / 2);
+        ctx.fillText('@', player.x * tileSize + tileSize/2, player.y * tileSize + tileSize/2);
 
         ctx.restore();
 
-        // simple controls at bottom
+        // ---- HUD ----
+        let hudY = 20;
+        ctx.fillStyle = COL.text;
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('HP: ' + player.hp + '/' + player.maxHp, 16, hudY);
+        ctx.fillText('Floor: ' + floor, 16, hudY + 18);
+
+        // enemy count
+        let aliveCount = enemies.filter(e => e.alive).length;
+        ctx.fillStyle = aliveCount > 0 ? COL.enemy : COL.dim;
+        ctx.fillText('Enemies: ' + aliveCount, 16, hudY + 36);
+
+        // message
+        if (msg && Date.now() - msgTimer < 2500) {
+            ctx.fillStyle = COL.dim;
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(msg, canvas.width / 2, canvas.height - 36);
+        }
+
+        // controls hint
         ctx.fillStyle = COL.dim;
         ctx.font = '11px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('arrows or wasd to move', canvas.width / 2, canvas.height - 16);
+        ctx.fillText('arrows/wasd to move  |  > = stairs down', canvas.width / 2, canvas.height - 16);
     }
 
     const LOGO = [
@@ -181,8 +349,8 @@
         '|  | __ ____ ___.__.   __| _/_ __  ____    ____   ____  ____   ____   ',
         '|  |/ // __ <   |  |  / __ |  |  \\/    \\  / ___\\_/ __ \\/  _ \\ /    \\  ',
         '|    <\\  ___/\\___  | / /_/ |  |  /   |  \\/ /_/  >  ___(  <_> )   |  \\',
-        '|__|_ \\\\___  > ____| \\\\____ |____/|___|  /\\___  / \\___  >____/|___|  /',
-        '     \\/    \\/\\|           \\/          \\//_____/      \\/           \\/  '
+        '|__|_ \\\\___  > ____| \\____ |____/|___|  /\\___  / \\___  >____/|___|  /',
+        '     \\/    \\/|           \\/          \\/_____/      \\/           \\/  '
     ];
 
     function drawMenu() {
@@ -201,15 +369,18 @@
         ctx.fillStyle = COL.dim;
         ctx.font = '13px monospace';
         ctx.fillText('keyboard only roguelike - wip', cx, cy + 10);
+        ctx.font = '11px monospace';
+        ctx.fillText('no mouse. no tab. arrow keys only.', cx, cy + 28);
 
         if (Math.floor(Date.now() / 500) % 2) {
             ctx.fillStyle = COL.text;
             ctx.font = '15px monospace';
-            ctx.fillText('[ press ENTER ]', cx, cy + 50);
+            ctx.fillText('[ press ENTER ]', cx, cy + 60);
         }
     }
 
-    // input
+    // ---- input ----
+
     document.addEventListener('keydown', e => {
         if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
             e.preventDefault();
@@ -228,11 +399,14 @@
         }
     });
 
+    // ---- game loop ----
+
     function loop() {
         render();
         requestAnimationFrame(loop);
     }
     loop();
+
     </script>
 </body>
 </html>

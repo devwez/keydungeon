@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KeyDungeon</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: monospace;
+        }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <canvas id="c"></canvas>
+    <script>
+
+    // just got basic movement working in 2 rooms
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    const MAP_W = 30;
+    const MAP_H = 20;
+    const VIEW_RADIUS = 5;
+
+    const COL = {
+        bg: '#0a0a0a',
+        wallSeen: '#1a1a1a',
+        wallVis: '#2a2a2a',
+        floorSeen: '#0e0e0e',
+        floorVis: '#181818',
+        player: '#00ff41',
+        text: '#00ff41',
+        dim: '#005522',
+        bg2: '#0d0d0d'
+    };
+
+    let tileSize = 20;
+    let state = 'menu';
+    let map = [];
+    let player = { x: 0, y: 0 };
+    let lastMove = 0;
+    const MOVE_COOLDOWN = 120;
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        tileSize = Math.min(
+            Math.floor(canvas.width / MAP_W),
+            Math.floor(canvas.height / MAP_H)
+        );
+        tileSize = Math.max(14, Math.min(24, tileSize));
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function rand(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    // just two rooms and a corridor - nothing fancy
+    function generateMap() {
+        map = [];
+        for (let y = 0; y < MAP_H; y++) {
+            map[y] = [];
+            for (let x = 0; x < MAP_W; x++) {
+                map[y][x] = { type: 'wall', vis: false, seen: false };
+            }
+        }
+
+        // room 1 - left side
+        for (let y = 4; y < 12; y++)
+            for (let x = 3; x < 12; x++)
+                map[y][x].type = 'floor';
+
+        // room 2 - right side
+        for (let y = 6; y < 14; y++)
+            for (let x = 18; x < 27; x++)
+                map[y][x].type = 'floor';
+
+        // corridor connecting them
+        for (let x = 12; x < 18; x++)
+            map[8][x].type = 'floor';
+    }
+
+    function updateVis() {
+        for (let y = 0; y < MAP_H; y++)
+            for (let x = 0; x < MAP_W; x++)
+                map[y][x].vis = false;
+
+        for (let y = 0; y < MAP_H; y++)
+            for (let x = 0; x < MAP_W; x++)
+                if (Math.abs(x - player.x) + Math.abs(y - player.y) <= VIEW_RADIUS) {
+                    map[y][x].vis = true;
+                    map[y][x].seen = true;
+                }
+    }
+
+    function tryMove(dx, dy) {
+        let nx = player.x + dx;
+        let ny = player.y + dy;
+        if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) return;
+        if (map[ny][nx].type === 'wall') return;
+        player.x = nx;
+        player.y = ny;
+        updateVis();
+    }
+
+    function movePlayer(dx, dy) {
+        if (state !== 'playing') return;
+        let now = Date.now();
+        if (now - lastMove < MOVE_COOLDOWN) return;
+        lastMove = now;
+        tryMove(dx, dy);
+    }
+
+    function initGame() {
+        generateMap();
+        player.x = 7;
+        player.y = 8;
+        updateVis();
+    }
+
+    // rendering
+    function render() {
+        ctx.fillStyle = COL.bg;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (state === 'menu') {
+            drawMenu();
+        } else {
+            drawGame();
+        }
+    }
+
+    function drawGame() {
+        let ox = Math.floor((canvas.width - MAP_W * tileSize) / 2);
+        let oy = Math.floor((canvas.height - MAP_H * tileSize) / 2);
+        ctx.save();
+        ctx.translate(ox, oy);
+
+        for (let y = 0; y < MAP_H; y++) {
+            for (let x = 0; x < MAP_W; x++) {
+                let t = map[y][x];
+                if (!t.seen) continue;
+                let sx = x * tileSize, sy = y * tileSize;
+
+                ctx.fillStyle = t.type === 'wall' ?
+                    (t.vis ? COL.wallVis : COL.wallSeen) :
+                    (t.vis ? COL.floorVis : COL.floorSeen);
+                ctx.fillRect(sx, sy, tileSize, tileSize);
+            }
+        }
+
+        // player
+        ctx.fillStyle = COL.player;
+        ctx.font = 'bold ' + tileSize + 'px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('@', player.x * tileSize + tileSize / 2, player.y * tileSize + tileSize / 2);
+
+        ctx.restore();
+
+        // simple controls at bottom
+        ctx.fillStyle = COL.dim;
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('arrows or wasd to move', canvas.width / 2, canvas.height - 16);
+    }
+
+    const LOGO = [
+        ' __                      .___                                         ',
+        '|  | __ ____ ___.__.   __| _/_ __  ____    ____   ____  ____   ____   ',
+        '|  |/ // __ <   |  |  / __ |  |  \\/    \\  / ___\\_/ __ \\/  _ \\ /    \\  ',
+        '|    <\\  ___/\\___  | / /_/ |  |  /   |  \\/ /_/  >  ___(  <_> )   |  \\',
+        '|__|_ \\\\___  > ____| \\\\____ |____/|___|  /\\___  / \\___  >____/|___|  /',
+        '     \\/    \\/\\|           \\/          \\//_____/      \\/           \\/  '
+    ];
+
+    function drawMenu() {
+        let cx = canvas.width / 2;
+        let cy = canvas.height / 2;
+
+        ctx.fillStyle = COL.text;
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        let logoY = cy - 100;
+        for (let i = 0; i < LOGO.length; i++) {
+            ctx.fillText(LOGO[i], cx, logoY + i * 12);
+        }
+
+        ctx.fillStyle = COL.dim;
+        ctx.font = '13px monospace';
+        ctx.fillText('keyboard only roguelike - wip', cx, cy + 10);
+
+        if (Math.floor(Date.now() / 500) % 2) {
+            ctx.fillStyle = COL.text;
+            ctx.font = '15px monospace';
+            ctx.fillText('[ press ENTER ]', cx, cy + 50);
+        }
+    }
+
+    // input
+    document.addEventListener('keydown', e => {
+        if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+            e.preventDefault();
+        }
+
+        if (state === 'menu') {
+            if (e.key === 'Enter') { initGame(); state = 'playing'; }
+            return;
+        }
+
+        switch (e.key) {
+            case 'ArrowUp':    case 'w': case 'W': movePlayer(0, -1); break;
+            case 'ArrowDown':  case 's': case 'S': movePlayer(0,  1); break;
+            case 'ArrowLeft':  case 'a': case 'A': movePlayer(-1, 0); break;
+            case 'ArrowRight': case 'd': case 'D': movePlayer(1,  0); break;
+        }
+    });
+
+    function loop() {
+        render();
+        requestAnimationFrame(loop);
+    }
+    loop();
+    </script>
+</body>
+</html>

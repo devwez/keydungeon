@@ -22,7 +22,6 @@
     <canvas id="c"></canvas>
     <script>
 
-    // keydungeon - keyboard only roguelike
     // day 1: dungeon gen, enemies (no combat yet), fog of war, stairs
 
     const canvas = document.getElementById('c');
@@ -76,7 +75,7 @@
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 
-    // ---- BSP dungeon generation ----
+    // ---- dungeon gen ----
     // this took longer than i expected, kept getting overlapping rooms
 
     function generateMap() {
@@ -174,7 +173,7 @@
     }
 
     // ---- fog of war ----
-    // using manhattan distance for now, should do line of sight later
+    //  should do line of sight later
 
     function updateVis() {
         for (let y = 0; y < MAP_H; y++)
@@ -200,10 +199,10 @@
         if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) return;
         if (map[ny][nx].type === 'wall') return;
 
-        // check enemy collision - bump to attack (day 2 will add real combat)
+        // check enemy collision (day 2 will add real combat)
         let enemy = enemies.find(e => e.alive && e.x === nx && e.y === ny);
         if (enemy) {
-            // just show a message for now, no real combat
+            // just show a message for now
             showMessage('you bumped into a ' + getEnemyName(enemy.type) + '!');
             return;
         }

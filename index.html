@@ -22,7 +22,8 @@
     <canvas id="c"></canvas>
     <script>
 
-    // day 1: dungeon gen, enemies (no combat yet), fog of war, stairs
+    // keydungeon - keyboard only roguelike
+    // day 5: improved menus, death/win screens, room tracking
 
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
@@ -31,7 +32,6 @@
     const MAP_H = 28;
     const VIEW_RADIUS = 6;
 
-    // colors
     const COL = {
         bg: '#0a0a0a',
         wallSeen: '#1a1a1a',
@@ -42,22 +42,39 @@
         text: '#00ff41',
         dim: '#005522',
         enemy: '#ff4444',
+        enemyDead: '#661111',
         stairs: '#ffcc00',
-        corridor: '#111111'
+        hit: '#ff8800',
+        heal: '#00ccff',
+        dead: '#ff0000',
+        win: '#ffcc00'
     };
 
     let tileSize = 18;
-    let state = 'menu';
+    let state = 'menu'; // menu, playing, dead, won, cleared
     let map = [];
     let rooms = [];
     let enemies = [];
-    let player = { x: 0, y: 0, hp: 60, maxHp: 60 };
+    let player = { x: 0, y: 0, hp: 60, maxHp: 60, atk: 8, def: 2 };
     let floor = 1;
+    let maxFloors = 5;
     let lastMove = 0;
-    const MOVE_COOLDOWN = 140; // slightly slower so cant hold keys
+    const MOVE_COOLDOWN = 140;
     let stairsPos = null;
-    let msg = ''; // bottom message
+    let msg = '';
     let msgTimer = 0;
+    let score = 0;
+    let turns = 0;
+    let totalKills = 0;
+    let totalEnemiesKilled = 0;
+    let roomsCleared = 0;
+    let clearedRooms = {};
+
+    const ENEMY_STATS = {
+        s: { name: 'slime',   hp: 10, atk: 3, char: '🦠', color: '#44ff44' },
+        b: { name: 'bat',     hp: 8,  atk: 2, char: '🦇', color: '#aa44ff' },
+        k: { name: 'skeleton', hp: 15, atk: 5, char: '💀', color: '#ff4444' }
+    };
 
     function resize() {
         canvas.width = window.innerWidth;
@@ -75,8 +92,11 @@
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 
+    function dist(x1, y1, x2, y2) {
+        return Math.abs(x1 - x2) + Math.abs(y1 - y2);
+    }
+
     // ---- dungeon gen ----
-    // this took longer than i expected, kept getting overlapping rooms
 
     function generateMap() {
         map = [];
@@ -90,10 +110,8 @@
             }
         }
 
-        // generate rooms with simple random placement
-        // tried bsp but this was simpler and works ok
         let attempts = 0;
-        let numRooms = rand(5, 7) + Math.min(floor, 3); // more rooms on deeper floors
+        let numRooms = rand(5, 7) + Math.min(floor, 3);
 
         while (rooms.length < numRooms && attempts < 200) {
             let w = rand(4, 9);
@@ -112,7 +130,6 @@
 
             if (!overlap) {
                 rooms.push({ x, y, w, h, cx: Math.floor(x + w/2), cy: Math.floor(y + h/2) });
-                // carve room
                 for (let ry = y; ry < y + h; ry++)
                     for (let rx = x; rx < x + w; rx++)
                         map[ry][rx].type = 'floor';
@@ -120,35 +137,33 @@
             attempts++;
         }
 
-        // connect rooms with corridors (connect each to the next)
         for (let i = 0; i < rooms.length - 1; i++) {
-            let a = rooms[i];
-            let b = rooms[i + 1];
-            carveCorridor(a.cx, a.cy, b.cx, b.cy);
+            carveCorridor(rooms[i].cx, rooms[i].cy, rooms[i+1].cx, rooms[i+1].cy);
         }
 
-        // place player in first room
         player.x = rooms[0].cx;
         player.y = rooms[0].cy;
 
-        // place stairs in last room
         let lastRoom = rooms[rooms.length - 1];
         stairsPos = { x: lastRoom.cx, y: lastRoom.cy };
 
-        // place enemies in rooms (not first room)
-        let enemyTypes = ['s', 'b', 'k']; // slime, bat, skeleton
+        // spawn enemies
+        let types = ['s', 'b', 'k'];
         for (let i = 1; i < rooms.length; i++) {
             let r = rooms[i];
             let numEnemies = rand(1, 2) + Math.floor(floor / 2);
             for (let j = 0; j < numEnemies; j++) {
                 let ex = rand(r.x + 1, r.x + r.w - 2);
                 let ey = rand(r.y + 1, r.y + r.h - 2);
-                // dont place on stairs
                 if (stairsPos && ex === stairsPos.x && ey === stairsPos.y) continue;
-                let type = enemyTypes[rand(0, enemyTypes.length - 1)];
+                if (enemies.some(e => e.alive && e.x === ex && e.y === ey)) continue;
+                let type = types[rand(0, types.length - 1)];
+                let stats = ENEMY_STATS[type];
                 enemies.push({
                     x: ex, y: ey, type: type,
-                    hp: type === 's' ? 10 : type === 'b' ? 8 : 15,
+                    hp: stats.hp + Math.floor(floor * 1.5),
+                    maxHp: stats.hp + Math.floor(floor * 1.5),
+                    atk: stats.atk + Math.floor(floor / 2),
                     alive: true
                 });
             }
@@ -158,7 +173,6 @@
     }
 
     function carveCorridor(x1, y1, x2, y2) {
-        // l-shaped corridor
         let x = x1, y = y1;
         while (x !== x2) {
             if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H)
@@ -173,7 +187,6 @@
     }
 
     // ---- fog of war ----
-    //  should do line of sight later
 
     function updateVis() {
         for (let y = 0; y < MAP_H; y++)
@@ -182,13 +195,133 @@
 
         for (let y = 0; y < MAP_H; y++)
             for (let x = 0; x < MAP_W; x++) {
-                let dx = Math.abs(x - player.x);
-                let dy = Math.abs(y - player.y);
-                if (dx + dy <= VIEW_RADIUS) {
+                if (dist(x, y, player.x, player.y) <= VIEW_RADIUS) {
                     map[y][x].vis = true;
                     map[y][x].seen = true;
                 }
             }
+    }
+
+    // ---- combat ----
+
+    function playerAttack(enemy) {
+        let dmg = Math.max(1, player.atk - rand(0, 2));
+        enemy.hp -= dmg;
+        showMessage('you hit the ' + ENEMY_STATS[enemy.type].name + ' for ' + dmg + ' damage');
+
+        if (enemy.hp <= 0) {
+            enemy.alive = false;
+            score += 10;
+            totalKills++;
+            totalEnemiesKilled++;
+            showMessage('you killed the ' + ENEMY_STATS[enemy.type].name + '!');
+        }
+    }
+
+    function enemyAttack(enemy) {
+        let dmg = Math.max(1, enemy.atk - player.def + rand(0, 2));
+        player.hp -= dmg;
+        showMessage('the ' + ENEMY_STATS[enemy.type].name + ' hits you for ' + dmg + ' damage!');
+
+        if (player.hp <= 0) {
+            player.hp = 0;
+            state = 'dead';
+        }
+    }
+
+    function checkFloorClear() {
+        let ri = getRoomIndex(player.x, player.y);
+        if (ri === -1 || clearedRooms[ri]) return;
+
+        let roomEnemies = enemies.filter(e => {
+            return e.alive && getRoomIndex(e.x, e.y) === ri;
+        });
+
+        if (roomEnemies.length === 0) {
+            clearedRooms[ri] = true;
+            roomsCleared++;
+            score += 50;
+            showMessage('room cleared! +50 score');
+        }
+
+        // mark empty rooms as cleared too
+        for (let i = 0; i < rooms.length; i++) {
+            if (!clearedRooms[i]) {
+                let roomEnemiesAll = enemies.filter(e => {
+                    return e.alive && getRoomIndex(e.x, e.y) === i;
+                });
+                if (roomEnemiesAll.length === 0) {
+                    clearedRooms[i] = true;
+                    roomsCleared++;
+                }
+            }
+        }
+    }
+
+    // ---- enemy AI ----
+
+    function moveEnemies() {
+        for (let e of enemies) {
+            if (!e.alive) continue;
+            if (dist(e.x, e.y, player.x, player.y) > VIEW_RADIUS + 4) continue;
+
+            let dx = 0, dy = 0;
+            let type = e.type;
+
+            if (type === 's') {
+                // slime: wanders randomly, 33% chance to move
+                if (rand(1, 3) === 1) {
+                    let dir = rand(0, 3);
+                    dx = dir === 0 ? 1 : dir === 1 ? -1 : 0;
+                    dy = dir === 2 ? 1 : dir === 3 ? -1 : 0;
+                }
+            } else if (type === 'b') {
+                // bat: moves every turn, random
+                let dir = rand(0, 3);
+                dx = dir === 0 ? 1 : dir === 1 ? -1 : 0;
+                dy = dir === 2 ? 1 : dir === 3 ? -1 : 0;
+            } else if (type === 'k') {
+                // skeleton: chases if visible, wanders otherwise
+                if (map[e.y][e.x].vis) {
+                    if (e.x < player.x) dx = 1;
+                    else if (e.x > player.x) dx = -1;
+                    if (e.y < player.y) dy = 1;
+                    else if (e.y > player.y) dy = -1;
+                    // prioritize axis with bigger distance
+                    if (Math.abs(player.x - e.x) > Math.abs(player.y - e.y)) {
+                        dy = 0;
+                    } else {
+                        dx = 0;
+                    }
+                } else {
+                    if (rand(1, 2) === 1) {
+                        let dir = rand(0, 3);
+                        dx = dir === 0 ? 1 : dir === 1 ? -1 : 0;
+                        dy = dir === 2 ? 1 : dir === 3 ? -1 : 0;
+                    }
+                }
+            }
+
+            if (dx === 0 && dy === 0) continue;
+
+            let nx = e.x + dx;
+            let ny = e.y + dy;
+
+            if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+            if (map[ny][nx].type === 'wall') continue;
+
+            // hit player -> attack
+            if (nx === player.x && ny === player.y) {
+                enemyAttack(e);
+                continue;
+            }
+
+            // hit other enemy -> stay
+            if (enemies.some(other => other.alive && other !== e && other.x === nx && other.y === ny)) continue;
+
+            e.x = nx;
+            e.y = ny;
+        }
     }
 
     // ---- movement ----
@@ -199,34 +332,45 @@
         if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) return;
         if (map[ny][nx].type === 'wall') return;
 
-        // check enemy collision (day 2 will add real combat)
+        // bump to attack
         let enemy = enemies.find(e => e.alive && e.x === nx && e.y === ny);
         if (enemy) {
-            // just show a message for now
-            showMessage('you bumped into a ' + getEnemyName(enemy.type) + '!');
+            playerAttack(enemy);
+            if (state === 'playing') moveEnemies();
+            updateVis();
+            turns++;
+            checkFloorClear();
             return;
         }
 
         player.x = nx;
         player.y = ny;
 
-        // check stairs
+        // stairs
         if (stairsPos && player.x === stairsPos.x && player.y === stairsPos.y) {
+            let remaining = enemies.filter(e => e.alive).length;
+            if (remaining > 0) {
+                showMessage('kill all enemies first! (' + remaining + ' remaining)');
+                player.x = nx - dx;
+                player.y = ny - dy;
+                return;
+            }
             floor++;
-            player.hp = Math.min(player.hp + 10, player.maxHp); // heal a bit between floors
+            score += 50;
+            if (floor > maxFloors) {
+                state = 'won';
+                return;
+            }
+            player.hp = Math.min(player.hp + 10, player.maxHp);
             generateMap();
             showMessage('descended to floor ' + floor);
             return;
         }
 
+        moveEnemies();
         updateVis();
-    }
-
-    function getEnemyName(type) {
-        if (type === 's') return 'slime';
-        if (type === 'b') return 'bat';
-        if (type === 'k') return 'skeleton';
-        return 'thing';
+        turns++;
+        checkFloorClear();
     }
 
     function movePlayer(dx, dy) {
@@ -242,11 +386,27 @@
         msgTimer = Date.now();
     }
 
+    function getRoomIndex(x, y) {
+        for (let i = 0; i < rooms.length; i++) {
+            let r = rooms[i];
+            if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return i;
+        }
+        return -1;
+    }
+
     // ---- init ----
 
     function initGame() {
         floor = 1;
+        score = 0;
+        turns = 0;
+        totalKills = 0;
+        totalEnemiesKilled = 0;
+        roomsCleared = 0;
+        clearedRooms = {};
         player.hp = player.maxHp;
+        player.atk = 8;
+        player.def = 2;
         generateMap();
     }
 
@@ -260,6 +420,10 @@
             drawMenu();
         } else if (state === 'playing') {
             drawGame();
+        } else if (state === 'dead') {
+            drawGameOver();
+        } else if (state === 'won') {
+            drawWin();
         }
     }
 
@@ -269,7 +433,6 @@
         ctx.save();
         ctx.translate(ox, oy);
 
-        // draw map
         for (let y = 0; y < MAP_H; y++) {
             for (let x = 0; x < MAP_W; x++) {
                 let t = map[y][x];
@@ -285,62 +448,192 @@
             }
         }
 
-        // draw stairs (only if visible)
+        // stairs
         if (stairsPos && map[stairsPos.y][stairsPos.x].vis) {
-            ctx.fillStyle = COL.stairs;
+            let allDead = enemies.filter(e => e.alive).length === 0;
+            ctx.fillStyle = allDead ? COL.stairs : '#332200';
             ctx.font = 'bold ' + tileSize + 'px monospace';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('>', stairsPos.x * tileSize + tileSize/2, stairsPos.y * tileSize + tileSize/2);
+            ctx.fillText('🚪', stairsPos.x * tileSize + tileSize/2, stairsPos.y * tileSize + tileSize/2);
         }
 
-        // draw enemies (only if visible)
+        // enemies
         ctx.font = (tileSize - 2) + 'px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         for (let e of enemies) {
             if (!e.alive) continue;
             if (!map[e.y][e.x].vis) continue;
-            ctx.fillStyle = COL.enemy;
-            let ch = e.type === 's' ? '~' : e.type === 'b' ? 'v' : 'K';
-            ctx.fillText(ch, e.x * tileSize + tileSize/2, e.y * tileSize + tileSize/2);
+            let stats = ENEMY_STATS[e.type];
+            ctx.fillStyle = stats.color;
+            ctx.fillText(stats.char, e.x * tileSize + tileSize/2, e.y * tileSize + tileSize/2);
+
+            // hp bar above enemy
+            if (e.hp < e.maxHp) {
+                let barW = tileSize - 4;
+                let barH = 2;
+                let hpPct = e.hp / e.maxHp;
+                ctx.fillStyle = '#330000';
+                ctx.fillRect(e.x * tileSize + 2, e.y * tileSize - 4, barW, barH);
+                ctx.fillStyle = hpPct > 0.5 ? '#44ff44' : hpPct > 0.25 ? '#ffaa00' : '#ff0000';
+                ctx.fillRect(e.x * tileSize + 2, e.y * tileSize - 4, barW * hpPct, barH);
+            }
         }
 
-        // draw player
-        ctx.fillStyle = COL.player;
+        // player
+        ctx.fillStyle = player.hp > 0 ? COL.player : COL.dead;
         ctx.font = 'bold ' + tileSize + 'px monospace';
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('@', player.x * tileSize + tileSize/2, player.y * tileSize + tileSize/2);
+        ctx.textBaseline = 'middle';            ctx.fillText('🧙', player.x * tileSize + tileSize/2, player.y * tileSize + tileSize/2);
 
         ctx.restore();
 
         // ---- HUD ----
         let hudY = 20;
+        ctx.textAlign = 'left';
+
+        // HP bar
         ctx.fillStyle = COL.text;
         ctx.font = '13px monospace';
-        ctx.textAlign = 'left';
         ctx.fillText('HP: ' + player.hp + '/' + player.maxHp, 16, hudY);
-        ctx.fillText('Floor: ' + floor, 16, hudY + 18);
+
+        let hpBarW = 120;
+        let hpBarH = 6;
+        let hpPct = player.hp / player.maxHp;
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(16, hudY + 5, hpBarW, hpBarH);
+        ctx.fillStyle = hpPct > 0.5 ? COL.player : hpPct > 0.25 ? COL.hit : COL.dead;
+        ctx.fillRect(16, hudY + 5, hpBarW * hpPct, hpBarH);
+
+        ctx.fillStyle = COL.text;
+        ctx.fillText('Floor: ' + floor + '/' + maxFloors, 16, hudY + 24);
+        ctx.fillText('ATK: ' + player.atk + '  DEF: ' + player.def, 16, hudY + 40);
 
         // enemy count
         let aliveCount = enemies.filter(e => e.alive).length;
-        ctx.fillStyle = aliveCount > 0 ? COL.enemy : COL.dim;
-        ctx.fillText('Enemies: ' + aliveCount, 16, hudY + 36);
+        ctx.fillStyle = aliveCount > 0 ? COL.enemy : '#00cc44';
+        ctx.fillText(aliveCount > 0 ? 'Enemies: ' + aliveCount : 'ALL CLEAR - find 🚪!', 16, hudY + 56);
+
+        // score + turns
+        ctx.fillStyle = COL.dim;
+        ctx.textAlign = 'right';
+        ctx.fillText('Score: ' + score, canvas.width - 16, hudY);
+        ctx.fillText('Turns: ' + turns, canvas.width - 16, hudY + 18);
+        ctx.fillText('Kills: ' + totalEnemiesKilled, canvas.width - 16, hudY + 36);
 
         // message
         if (msg && Date.now() - msgTimer < 2500) {
-            ctx.fillStyle = COL.dim;
+            let alpha = 1;
+            let elapsed = Date.now() - msgTimer;
+            if (elapsed > 2000) alpha = 1 - (elapsed - 2000) / 500;
+            ctx.fillStyle = msg.includes('killed') ? COL.text :
+                           msg.includes('hits you') ? COL.dead :
+                           msg.includes('hit the') ? COL.hit :
+                           msg.includes('cleared') ? '#00cc44' :
+                           msg.includes('kill all') ? COL.hit : COL.dim;
+            ctx.globalAlpha = alpha;
             ctx.font = '12px monospace';
             ctx.textAlign = 'center';
             ctx.fillText(msg, canvas.width / 2, canvas.height - 36);
+            ctx.globalAlpha = 1;
         }
 
-        // controls hint
+        // controls
         ctx.fillStyle = COL.dim;
         ctx.font = '11px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('arrows/wasd to move  |  > = stairs down', canvas.width / 2, canvas.height - 16);
+        ctx.fillText('arrows/wasd: move  |  walk into enemies to attack  |  🚪 = stairs', canvas.width / 2, canvas.height - 16);
+    }
+
+    function drawGameOver() {
+        let cx = canvas.width / 2;
+        let cy = canvas.height / 2;
+
+        ctx.fillStyle = '#110000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = COL.dead;
+        ctx.font = 'bold 42px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('YOU DIED', cx, cy - 70);
+
+        ctx.fillStyle = COL.dim;
+        ctx.font = '14px monospace';
+        ctx.fillText('floor ' + floor + '/' + maxFloors + '  |  score ' + score, cx, cy - 20);
+
+        ctx.fillStyle = '#666';
+        ctx.font = '13px monospace';
+        ctx.fillText('enemies killed: ' + totalEnemiesKilled + '  |  turns: ' + turns, cx, cy + 5);
+
+        let killer = getLastKiller();
+        ctx.fillStyle = COL.enemy;
+        ctx.fillText('killed by: ' + killer, cx, cy + 30);
+
+        ctx.fillStyle = '#444';
+        ctx.font = '11px monospace';
+        if (killer.includes('skeleton')) {
+            ctx.fillText('tip: skeletons chase you. keep distance.', cx, cy + 55);
+        } else if (killer.includes('bat')) {
+            ctx.fillText('tip: bats move every turn. attack first.', cx, cy + 55);
+        } else {
+            ctx.fillText('tip: slimes wander randomly. play aggressive.', cx, cy + 55);
+        }
+
+        if (Math.floor(Date.now() / 500) % 2) {
+            ctx.fillStyle = COL.text;
+            ctx.font = '15px monospace';
+            ctx.fillText('[ press ENTER to try again ]', cx, cy + 90);
+        }
+    }
+
+    function drawWin() {
+        let cx = canvas.width / 2;
+        let cy = canvas.height / 2;
+
+        ctx.fillStyle = '#001108';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#00ffcc';
+        ctx.font = 'bold 42px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('YOU CLEARED THE DUNGEON', cx, cy - 80);
+
+        ctx.fillStyle = COL.player;
+        ctx.font = '16px monospace';
+        ctx.fillText('all ' + maxFloors + ' floors conquered', cx, cy - 40);
+
+        ctx.fillStyle = COL.text;
+        ctx.font = '14px monospace';
+        ctx.fillText('final score: ' + (score + 200), cx, cy);
+
+        ctx.fillStyle = '#888';
+        ctx.font = '13px monospace';
+        ctx.fillText('enemies killed: ' + totalEnemiesKilled + '  |  turns: ' + turns, cx, cy + 25);
+        ctx.fillText('rooms cleared: ' + roomsCleared + '  |  floors: ' + maxFloors, cx, cy + 48);
+
+        ctx.fillStyle = COL.dim;
+        ctx.font = '12px monospace';
+        ctx.fillText('keyboard only. no mouse. no tab. all skill.', cx, cy + 80);
+
+        if (Math.floor(Date.now() / 500) % 2) {
+            ctx.fillStyle = '#00ffcc';
+            ctx.font = '15px monospace';
+            ctx.fillText('[ press ENTER to play again ]', cx, cy + 115);
+        }
+    }
+
+    function getLastKiller() {
+        let closest = null;
+        let minDist = 999;
+        for (let e of enemies) {
+            if (!e.alive) continue;
+            let d = dist(e.x, e.y, player.x, player.y);
+            if (d < minDist) { minDist = d; closest = e; }
+        }
+        return closest ? ENEMY_STATS[closest.type].name : 'unknown creature';
     }
 
     const LOGO = [
@@ -367,14 +660,32 @@
 
         ctx.fillStyle = COL.dim;
         ctx.font = '13px monospace';
-        ctx.fillText('keyboard only roguelike - wip', cx, cy + 10);
+        ctx.fillText('keyboard only roguelike', cx, cy + 10);
         ctx.font = '11px monospace';
         ctx.fillText('no mouse. no tab. arrow keys only.', cx, cy + 28);
+
+        // show enemy types
+        ctx.font = '11px monospace';
+        ctx.fillStyle = ENEMY_STATS.s.color;
+        ctx.fillText('~ slime  ', cx - 60, cy + 48);
+        ctx.fillStyle = ENEMY_STATS.b.color;
+        ctx.fillText('v bat  ', cx - 5, cy + 48);
+        ctx.fillStyle = ENEMY_STATS.k.color;
+        ctx.fillText('K skeleton', cx + 55, cy + 50);
+
+        ctx.fillStyle = '#444';
+        ctx.font = '10px monospace';
+        ctx.fillText('walk into enemies to attack  |  find the 🚪 to descend', cx, cy + 72);
+        ctx.fillText('clear all enemies before using stairs', cx, cy + 85);
+
+        ctx.fillStyle = COL.dim;
+        ctx.font = '11px monospace';
+        ctx.fillText('5 floors deep. can you clear them all?', cx, cy + 102);
 
         if (Math.floor(Date.now() / 500) % 2) {
             ctx.fillStyle = COL.text;
             ctx.font = '15px monospace';
-            ctx.fillText('[ press ENTER ]', cx, cy + 60);
+            ctx.fillText('[ press ENTER ]', cx, cy + 128);
         }
     }
 
@@ -387,6 +698,16 @@
 
         if (state === 'menu') {
             if (e.key === 'Enter') { initGame(); state = 'playing'; }
+            return;
+        }
+
+        if (state === 'dead') {
+            if (e.key === 'Enter') { initGame(); state = 'playing'; }
+            return;
+        }
+
+        if (state === 'won') {
+            if (e.key === 'Enter') { state = 'menu'; }
             return;
         }
 
@@ -408,4 +729,4 @@
 
     </script>
 </body>
-</html>
+</html>

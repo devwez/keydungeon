@@ -41,3 +41,7 @@ just open `index.html` in a browser. thats it.
 ## made by
 
 bart / devwez — took about 12 hours across 5 days
+
+## ai disclosure
+
+used codebuff to help structure this readme and explain some of the tech. all game code was written by me.

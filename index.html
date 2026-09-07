@@ -24,6 +24,7 @@
 
     // keydungeon - keyboard only roguelike
     // day 5: improved menus, death/win screens, room tracking
+    // day 6: best run saves to local storage
 
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
@@ -69,6 +70,19 @@
     let totalEnemiesKilled = 0;
     let roomsCleared = 0;
     let clearedRooms = {};
+    let bestRun = { floor: 0, score: 0 };
+    try {
+        let saved = JSON.parse(localStorage.getItem('kd_best'));
+        if (saved && saved.floor) bestRun = saved;
+    } catch (e) {}
+
+    function saveBest() {
+        let s = state === 'won' ? score + 200 : score;
+        if (floor > bestRun.floor || (floor === bestRun.floor && s > bestRun.score)) {
+            bestRun = { floor: floor, score: s };
+            try { localStorage.setItem('kd_best', JSON.stringify(bestRun)); } catch (e) {}
+        }
+    }
 
     const ENEMY_STATS = {
         s: { name: 'slime',   hp: 10, atk: 3, char: '🦠', color: '#44ff44' },
@@ -226,6 +240,7 @@
         if (player.hp <= 0) {
             player.hp = 0;
             state = 'dead';
+            saveBest();
         }
     }
 
@@ -359,6 +374,7 @@
             score += 50;
             if (floor > maxFloors) {
                 state = 'won';
+                saveBest();
                 return;
             }
             player.hp = Math.min(player.hp + 10, player.maxHp);
@@ -682,10 +698,16 @@
         ctx.font = '11px monospace';
         ctx.fillText('5 floors deep. can you clear them all?', cx, cy + 102);
 
+        if (bestRun.floor > 0) {
+            ctx.fillStyle = '#777';
+            ctx.font = '11px monospace';
+            ctx.fillText('best run: floor ' + bestRun.floor + '  |  score ' + bestRun.score, cx, cy + 118);
+        }
+
         if (Math.floor(Date.now() / 500) % 2) {
             ctx.fillStyle = COL.text;
             ctx.font = '15px monospace';
-            ctx.fillText('[ press ENTER ]', cx, cy + 128);
+            ctx.fillText('[ press ENTER ]', cx, cy + 138);
         }
     }
 

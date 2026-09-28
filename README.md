@@ -11,6 +11,7 @@ built for [Tabbed](https://tabbed.hackclub.com/) — a YSWS where everything has
 - kill everything on a floor then find the 🚪 to go deeper
 - 5 floors, gets harder as you go down
 - you have 60 HP so dont be reckless
+- dead enemies sometimes drop 🧪 potions, walk over one for +15 HP
 
 ## enemies
 
